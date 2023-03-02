@@ -1,0 +1,78 @@
+---
+version: '3'
+
+networks:
+  net: ~
+
+services:
+  gateway:
+    image: golang:1.20-alpine
+    working_dir: /app
+    volumes:
+      - ./:/app
+    command:
+      - "go"
+      - "run"
+      - "./cmd/gateway"
+      - "-name"
+      - "gateway-0"
+      - "-join-address"
+      - "replica-0"
+    ports:
+      - 10000:10000/udp
+    networks:
+      - net
+    depends_on:
+      - replica-0
+
+  replica-0:
+    image: golang:1.20-alpine
+    working_dir: /app
+    volumes:
+      - ./:/app
+    command:
+      - "go"
+      - "run"
+      - "./cmd/server"
+      - "-name"
+      - "replica-0"
+      - "-join-address"
+      - "replica-0"
+    networks:
+      - net
+
+  replica-1:
+    image: golang:1.20-alpine
+    working_dir: /app
+    volumes:
+      - ./:/app
+    command:
+      - "go"
+      - "run"
+      - "./cmd/server"
+      - "-name"
+      - "replica-1"
+      - "-join-address"
+      - "replica-0"
+    networks:
+      - net
+    depends_on:
+      - replica-0
+
+  replica-2:
+    image: golang:1.20-alpine
+    working_dir: /app
+    volumes:
+      - ./:/app
+    command:
+      - "go"
+      - "run"
+      - "./cmd/server"
+      - "-name"
+      - "replica-2"
+      - "-join-address"
+      - "replica-0"
+    networks:
+      - net
+    depends_on:
+      - replica-0
