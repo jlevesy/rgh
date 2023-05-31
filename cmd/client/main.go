@@ -18,10 +18,12 @@ func main() {
 	var (
 		addr string
 		path string
+		key  string
 	)
 
 	flag.StringVar(&addr, "addr", "localhost:10000", "server address")
 	flag.StringVar(&path, "path", "/call", "path to call")
+	flag.StringVar(&key, "key", "", "routing key")
 	flag.Parse()
 
 	co, err := udp.Dial(addr)
@@ -48,7 +50,7 @@ func main() {
 			continue
 		}
 
-		query := genQuery()
+		query := genQuery(key)
 
 		req.AddQuery(query)
 
@@ -68,9 +70,12 @@ func main() {
 	}
 }
 
-func genQuery() string {
-	b := make([]byte, 10)
-	_, _ = rand.Read(b)
+func genQuery(key string) string {
+	if key == "" {
+		b := make([]byte, 10)
+		_, _ = rand.Read(b)
+		key = string(b)
+	}
 
-	return "key=" + string(b)
+	return "key=" + key
 }
