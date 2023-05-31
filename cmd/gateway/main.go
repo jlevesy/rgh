@@ -16,6 +16,7 @@ import (
 	"github.com/plgd-dev/go-coap/v3/net"
 	"github.com/plgd-dev/go-coap/v3/options"
 	"github.com/plgd-dev/go-coap/v3/udp"
+	"github.com/plgd-dev/go-coap/v3/udp/server"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -51,10 +52,15 @@ func main() {
 	if err != nil {
 		log.Fatal("Can't listen coap", err)
 	}
+
+	redirector := redirector{ring: ring}
+
 	coapSrv := udp.NewServer(
 		options.WithContext(ctx),
-		options.WithMux(redirect(ring)),
+		options.WithMux(&redirector),
 	)
+
+	redirector.server = coapSrv
 
 	var wg errgroup.Group
 
@@ -83,36 +89,38 @@ func main() {
 	log.Println("Exited")
 }
 
-func redirect(ring memberring.Ring) mux.Handler {
-	return mux.HandlerFunc(func(w mux.ResponseWriter, r *mux.Message) {
-		rawQueries, err := r.Message.Queries()
-		if err != nil {
-			log.Println("could retrieve queries", rawQueries)
-			coap.Abort(w)
-			return
-		}
+type redirector struct {
+	server *server.Server
+	ring   memberring.Ring
+}
 
-		qs := parseQueries(rawQueries)
+func (r *redirector) ServeCOAP(w mux.ResponseWriter, m *mux.Message) {
+	rawQueries, err := m.Message.Queries()
+	if err != nil {
+		log.Println("could retrieve queries", rawQueries)
+		coap.Abort(w)
+		return
+	}
 
-		key, ok := qs["key"]
-		if !ok {
-			log.Println("could retrieve key")
-			coap.Abort(w)
-			return
-		}
+	qs := parseQueries(rawQueries)
 
-		srv, err := ring.GetNode([]byte(key))
-		if err != nil {
-			log.Println("could not retrieve the node", err)
-			coap.Abort(w)
-			return
-		}
+	key, ok := qs["key"]
+	if !ok {
+		log.Println("could retrieve key")
+		coap.Abort(w)
+		return
+	}
 
-		fmt.Println("Routing query to node", srv.Name)
+	srv, err := r.ring.GetNode([]byte(key))
+	if err != nil {
+		log.Println("could not retrieve the node", err)
+		coap.Abort(w)
+		return
+	}
 
-		// LOOOOL
-		coap.Forward(srv.Addr.String()+":10000", w, r)
-	})
+	fmt.Println("Routing query to node", srv.Name)
+
+	coap.Forward(srv.Addr.String()+":10000", w, m, r.server)
 }
 
 func parseQueries(queries []string) map[string]string {
