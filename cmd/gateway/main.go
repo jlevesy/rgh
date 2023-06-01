@@ -1,10 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
+	"github.com/plgd-dev/go-coap/v3/message"
+	"github.com/plgd-dev/go-coap/v3/message/codes"
+	"github.com/plgd-dev/go-coap/v3/udp/server"
 	"log"
+	"net"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -13,7 +18,7 @@ import (
 	"github.com/jlevesy/rgh/pkg/coap"
 	"github.com/jlevesy/rgh/pkg/memberring"
 	"github.com/plgd-dev/go-coap/v3/mux"
-	"github.com/plgd-dev/go-coap/v3/net"
+	coapNet "github.com/plgd-dev/go-coap/v3/net"
 	"github.com/plgd-dev/go-coap/v3/options"
 	"github.com/plgd-dev/go-coap/v3/udp"
 	"golang.org/x/sync/errgroup"
@@ -47,13 +52,13 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	coapListener, err := net.NewListenUDP("udp", fmt.Sprintf(":%d", coapPort))
+	coapListener, err := coapNet.NewListenUDP("udp", fmt.Sprintf(":%d", coapPort))
 	if err != nil {
 		log.Fatal("Can't listen coap", err)
 	}
 	coapSrv := udp.NewServer(
 		options.WithContext(ctx),
-		options.WithMux(redirect(ring)),
+		//options.WithMux(redirect(ring, coapSrv))
 	)
 
 	var wg errgroup.Group
@@ -83,7 +88,7 @@ func main() {
 	log.Println("Exited")
 }
 
-func redirect(ring memberring.Ring) mux.Handler {
+func redirect(ring memberring.Ring, coapSrv *server.Server) mux.Handler {
 	return mux.HandlerFunc(func(w mux.ResponseWriter, r *mux.Message) {
 		rawQueries, err := r.Message.Queries()
 		if err != nil {
@@ -110,8 +115,25 @@ func redirect(ring memberring.Ring) mux.Handler {
 
 		fmt.Println("Routing query to node", srv.Name)
 
-		// LOOOOL
-		coap.Forward(srv.Addr.String()+":10000", w, r)
+		peer, err := net.ResolveUDPAddr("udp", srv.Addr.String()+":10000")
+		if err != nil {
+			log.Println("could resolve server addr", err)
+			coap.Abort(w)
+			return
+		}
+
+		conn, err := coapSrv.NewConn(peer)
+		resp, err := conn.Do(r.Message)
+		if err != nil {
+			w.SetResponse(
+				codes.InternalServerError,
+				message.TextPlain,
+				bytes.NewReader([]byte("something went wrong")),
+			)
+			return
+		}
+
+		w.SetMessage(resp)
 	})
 }
 
