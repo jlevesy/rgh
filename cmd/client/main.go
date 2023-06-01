@@ -28,12 +28,14 @@ func main() {
 		listen string
 		path   string
 		key    string
+		period time.Duration
 	)
 
 	flag.StringVar(&addr, "addr", "localhost:10000", "server address")
 	flag.StringVar(&listen, "listen", ":10010", "listen address")
 	flag.StringVar(&path, "path", "/call", "path to call")
 	flag.StringVar(&key, "key", "", "routing key")
+	flag.DurationVar(&period, "period", 10*time.Millisecond, "period")
 	flag.Parse()
 
 	addrUDP, err := stdnet.ResolveUDPAddr("udp", addr)
@@ -114,12 +116,12 @@ func main() {
 
 			calls[string(b)] += 1
 
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(period)
 		}
 	})
 
 	if err := wg.Wait(); err != nil {
-		fmt.Println("Clilent failed", err)
+		fmt.Println("Client failed", err)
 	}
 }
 
@@ -135,6 +137,14 @@ func genQuery(key string) string {
 
 func handleCall() mux.Handler {
 	return mux.HandlerFunc(func(w mux.ResponseWriter, req *mux.Message) {
+		payload, err := io.ReadAll(req.Body())
+		if err != nil {
+			log.Printf("cannot read body: %v", err)
+			return
+		}
+
+		fmt.Println("received a calllll!!!!", string(payload))
+
 		if err := w.SetResponse(codes.GET, message.TextPlain, bytes.NewReader([]byte("GENEREAL KENOBI"))); err != nil {
 			log.Printf("cannot set response: %v", err)
 		}

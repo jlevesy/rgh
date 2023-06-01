@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jlevesy/rgh/pkg/coap"
 	"github.com/jlevesy/rgh/pkg/memberring"
 	"github.com/plgd-dev/go-coap/v3/message"
 	"github.com/plgd-dev/go-coap/v3/message/codes"
@@ -51,8 +52,8 @@ func main() {
 
 	r := mux.NewRouter()
 	r.Use(logRequests)
-	r.Handle("/call", handleCall(memberName))
-	r.Handle("/bidirectional", handleBidirectionalCall(memberName))
+	r.Handle("/call", coap.ForwardUpstreamKey(handleCall(memberName)))
+	r.Handle("/bidirectional", coap.ForwardUpstreamKey(handleBidirectionalCall(memberName)))
 
 	coapListener, err := net.NewListenUDP("udp", fmt.Sprintf(":%d", coapPort))
 	if err != nil {
@@ -115,7 +116,7 @@ func handleBidirectionalCall(n string) mux.Handler {
 			return
 		}
 
-		fmt.Println("GOT A BIDIRECTIONAL RESPONSE", resp.Code(), string(payload))
+		fmt.Println("Got a bidirectional response", resp.Code(), string(payload))
 
 		if err := w.SetResponse(codes.GET, message.TextPlain, bytes.NewReader([]byte(n))); err != nil {
 			log.Printf("cannot set response: %v", err)
