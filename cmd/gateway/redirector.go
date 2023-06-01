@@ -11,21 +11,32 @@ import (
 	"github.com/plgd-dev/go-coap/v3/message/codes"
 	"github.com/plgd-dev/go-coap/v3/message/pool"
 	"github.com/plgd-dev/go-coap/v3/mux"
-	"github.com/plgd-dev/go-coap/v3/udp/server"
+	"github.com/plgd-dev/go-coap/v3/udp/client"
 	"log"
+	"math/rand"
 	"net"
+	"sync"
 )
+
+type NewConnFunc func(addr *net.UDPAddr) (*client.Conn, error)
 
 var (
 	ErrClientNotKnown = errors.New("client not known")
 )
 
 type Redirector struct {
-	coapSrv *server.Server
-	ring    memberring.MemberRing
+	newConnFunc NewConnFunc
+	ring        memberring.Ring
 
+	cm      sync.Mutex
 	clients map[string]mux.Conn
+
+	sm      sync.Mutex
 	servers map[string]mux.Conn
+}
+
+func (r *Redirector) SetNewConnFunc(newConnFunc NewConnFunc) {
+	r.newConnFunc = newConnFunc
 }
 
 func (r *Redirector) Redirect(w mux.ResponseWriter, msg *mux.Message) {
@@ -41,6 +52,8 @@ func (r *Redirector) Redirect(w mux.ResponseWriter, msg *mux.Message) {
 
 	key, ok := qs["key"]
 	if ok {
+		log.Printf("Client requqest with messageID %d, seqno %d", msg.MessageID(), msg.Sequence())
+
 		srvConn, err := r.getServerConnection(key)
 		if err != nil {
 			coap.Abort(w)
@@ -60,10 +73,13 @@ func (r *Redirector) Redirect(w mux.ResponseWriter, msg *mux.Message) {
 		}
 
 		// Then clone the response into the response writer, and voila.
+		messageID := w.Message().MessageID()
 		if err := resp.Clone(w.Message()); err != nil {
 			coap.Abort(w)
 			return
 		}
+
+		log.Printf("Client response with messageID %d, seqno %d", messageID, w.Message().Sequence())
 
 		return
 	}
@@ -112,11 +128,17 @@ func (r *Redirector) getOrRegisterClientConnection(addr string, w mux.ResponseWr
 	}
 
 	log.Println(fmt.Sprintf("new client connection: %s", addr))
+
+	r.cm.Lock()
+	defer r.cm.Unlock()
 	r.clients[addr] = w.Conn()
 	return w.Conn()
 }
 
 func (r *Redirector) getClientConnection(addr string) (mux.Conn, error) {
+	r.cm.Lock()
+	defer r.cm.Unlock()
+
 	if client, ok := r.clients[addr]; ok {
 		return client, nil
 	}
@@ -125,6 +147,9 @@ func (r *Redirector) getClientConnection(addr string) (mux.Conn, error) {
 }
 
 func (r *Redirector) getServerConnection(key string) (mux.Conn, error) {
+	r.cm.Lock()
+	defer r.cm.Unlock()
+
 	if conn, ok := r.servers[key]; ok {
 		return conn, nil
 	}
@@ -135,13 +160,13 @@ func (r *Redirector) getServerConnection(key string) (mux.Conn, error) {
 		return nil, err
 	}
 
-	peer, err := net.ResolveUDPAddr("udp", node.Addr.String()+":10000")
+	peer, err := net.ResolveUDPAddr("udp", node.Addr.String()+":"+getRandomPort(2))
 	if err != nil {
 		log.Println("could resolve server addr", err)
 		return nil, err
 	}
 
-	conn, err := r.coapSrv.NewConn(peer)
+	conn, err := r.newConnFunc(peer)
 	if err != nil {
 		log.Println("could resolve server addr", err)
 		return nil, err
@@ -182,6 +207,16 @@ func (r *Redirector) redirectToClient(clientConn mux.Conn, serverMsg *pool.Messa
 	return clientResp, nil
 }
 
-func NewRedirector() {
+func getRandomPort(num int) string {
+	min := 10001
+	max := 10000 + num
+	return fmt.Sprint(rand.Intn(max-min) + min)
+}
 
+func NewRedirector(ring memberring.Ring) *Redirector {
+	return &Redirector{
+		ring:    ring,
+		clients: make(map[string]mux.Conn),
+		servers: make(map[string]mux.Conn),
+	}
 }

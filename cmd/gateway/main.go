@@ -1,21 +1,15 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"flag"
 	"fmt"
-	"github.com/plgd-dev/go-coap/v3/message"
-	"github.com/plgd-dev/go-coap/v3/message/codes"
-	"github.com/plgd-dev/go-coap/v3/udp/server"
 	"log"
-	"net"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/jlevesy/rgh/pkg/coap"
 	"github.com/jlevesy/rgh/pkg/memberring"
 	"github.com/plgd-dev/go-coap/v3/mux"
 	coapNet "github.com/plgd-dev/go-coap/v3/net"
@@ -56,10 +50,13 @@ func main() {
 	if err != nil {
 		log.Fatal("Can't listen coap", err)
 	}
+
+	redirector := NewRedirector(ring)
 	coapSrv := udp.NewServer(
 		options.WithContext(ctx),
-		//options.WithMux(redirect(ring, coapSrv))
+		options.WithMux(redirect(redirector)),
 	)
+	redirector.SetNewConnFunc(coapSrv.NewConn)
 
 	var wg errgroup.Group
 
@@ -88,52 +85,9 @@ func main() {
 	log.Println("Exited")
 }
 
-func redirect(ring memberring.Ring, coapSrv *server.Server) mux.Handler {
+func redirect(redirector *Redirector) mux.Handler {
 	return mux.HandlerFunc(func(w mux.ResponseWriter, r *mux.Message) {
-		rawQueries, err := r.Message.Queries()
-		if err != nil {
-			log.Println("could retrieve queries", rawQueries)
-			coap.Abort(w)
-			return
-		}
-
-		qs := parseQueries(rawQueries)
-
-		key, ok := qs["key"]
-		if !ok {
-			log.Println("could retrieve key")
-			coap.Abort(w)
-			return
-		}
-
-		srv, err := ring.GetNode([]byte(key))
-		if err != nil {
-			log.Println("could not retrieve the node", err)
-			coap.Abort(w)
-			return
-		}
-
-		fmt.Println("Routing query to node", srv.Name)
-
-		peer, err := net.ResolveUDPAddr("udp", srv.Addr.String()+":10000")
-		if err != nil {
-			log.Println("could resolve server addr", err)
-			coap.Abort(w)
-			return
-		}
-
-		conn, err := coapSrv.NewConn(peer)
-		resp, err := conn.Do(r.Message)
-		if err != nil {
-			w.SetResponse(
-				codes.InternalServerError,
-				message.TextPlain,
-				bytes.NewReader([]byte("something went wrong")),
-			)
-			return
-		}
-
-		w.SetMessage(resp)
+		redirector.Redirect(w, r)
 	})
 }
 
