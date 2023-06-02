@@ -35,7 +35,7 @@ func main() {
 	flag.StringVar(&listen, "listen", ":10010", "listen address")
 	flag.StringVar(&path, "path", "/call", "path to call")
 	flag.StringVar(&key, "key", "", "routing key")
-	flag.DurationVar(&period, "period", 10*time.Minute, "period")
+	flag.DurationVar(&period, "period", 5*time.Second, "period")
 	flag.Parse()
 
 	addrUDP, err := stdnet.ResolveUDPAddr("udp", addr)
@@ -53,7 +53,7 @@ func main() {
 	defer cancel()
 
 	r := mux.NewRouter()
-	r.Handle("/bidirectional", handleCall())
+	r.Handle("/bidirectional", handleCall(listen))
 
 	coapSrv := udp.NewServer(options.WithContext(ctx), options.WithMux(r))
 
@@ -96,7 +96,7 @@ func main() {
 
 			req, err := co.NewGetRequest(grpCtx, path)
 			if err != nil {
-				log.Printf("Cannot get response: %v", err)
+				log.Printf("Cannot get request: %v", err)
 				continue
 			}
 
@@ -136,7 +136,7 @@ func genQuery(key string) string {
 	return "key=" + key
 }
 
-func handleCall() mux.Handler {
+func handleCall(listen string) mux.Handler {
 	return mux.HandlerFunc(func(w mux.ResponseWriter, req *mux.Message) {
 		payload, err := io.ReadAll(req.Body())
 		if err != nil {
@@ -144,9 +144,17 @@ func handleCall() mux.Handler {
 			return
 		}
 
-		fmt.Println("received a calllll!!!!", string(payload))
+		if string(payload) == fmt.Sprintf("HELLO 127.0.0.1%s client", listen) {
+			fmt.Println("received a calllll!!!! -----> ", string(payload))
 
-		if err := w.SetResponse(codes.GET, message.TextPlain, bytes.NewReader([]byte("GENEREAL KENOBI"))); err != nil {
+			if err := w.SetResponse(codes.Content, message.TextPlain,
+				bytes.NewReader([]byte(fmt.Sprintf("Congrats from %s client!!! You made it sweaty!!!", listen)))); err != nil {
+				log.Printf("cannot set response: %v", err)
+			}
+			return
+		}
+
+		if err := w.SetResponse(codes.BadRequest, message.TextPlain, bytes.NewReader([]byte("Wrong client dumbass!!!"))); err != nil {
 			log.Printf("cannot set response: %v", err)
 		}
 	})

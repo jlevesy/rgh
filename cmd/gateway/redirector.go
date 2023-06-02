@@ -28,10 +28,7 @@ type Redirector struct {
 	newConnFunc NewConnFunc
 	ring        memberring.Ring
 
-	cm      sync.Mutex
-	clients map[string]mux.Conn
-
-	sm      sync.Mutex
+	m       sync.Mutex
 	servers map[string]mux.Conn
 }
 
@@ -47,7 +44,6 @@ func (r *Redirector) Redirect(w mux.ResponseWriter, msg *mux.Message) {
 		return
 	}
 
-	addr := w.Conn().RemoteAddr()
 	qs := parseQueries(rawQueries)
 
 	key, ok := qs["key"]
@@ -61,8 +57,7 @@ func (r *Redirector) Redirect(w mux.ResponseWriter, msg *mux.Message) {
 		}
 
 		clientMsg := msg.Message
-		clientConn := r.getOrRegisterClientConnection(addr.String(), w)
-		resp, err := r.redirectToServer(srvConn, clientConn, clientMsg)
+		resp, err := r.redirectToServer(srvConn, w.Conn(), clientMsg, rawQueries)
 		if err != nil {
 			w.SetResponse(
 				codes.InternalServerError,
@@ -84,35 +79,6 @@ func (r *Redirector) Redirect(w mux.ResponseWriter, msg *mux.Message) {
 		return
 	}
 
-	clientAddr, ok := qs["clientAddr"]
-	if ok {
-		clientConn, err := r.getClientConnection(clientAddr)
-		if err != nil {
-			log.Println(fmt.Sprintf("no connection for %s client", clientAddr))
-			coap.Abort(w)
-			return
-		}
-
-		srvMsg := msg.Message
-		resp, err := r.redirectToClient(clientConn, srvMsg)
-		if err != nil {
-			w.SetResponse(
-				codes.InternalServerError,
-				message.TextPlain,
-				bytes.NewReader([]byte(err.Error())),
-			)
-			return
-		}
-
-		// Then clone the response into the response writer, and voila.
-		if err := resp.Clone(w.Message()); err != nil {
-			coap.Abort(w)
-			return
-		}
-
-		return
-	}
-
 	log.Println("unknown request")
 	w.SetResponse(
 		codes.NotImplemented,
@@ -121,34 +87,9 @@ func (r *Redirector) Redirect(w mux.ResponseWriter, msg *mux.Message) {
 	)
 }
 
-func (r *Redirector) getOrRegisterClientConnection(addr string, w mux.ResponseWriter) mux.Conn {
-	clientConn, err := r.getClientConnection(addr)
-	if err == nil {
-		return clientConn
-	}
-
-	log.Println(fmt.Sprintf("new client connection: %s", addr))
-
-	r.cm.Lock()
-	defer r.cm.Unlock()
-	r.clients[addr] = w.Conn()
-	return w.Conn()
-}
-
-func (r *Redirector) getClientConnection(addr string) (mux.Conn, error) {
-	r.cm.Lock()
-	defer r.cm.Unlock()
-
-	if client, ok := r.clients[addr]; ok {
-		return client, nil
-	}
-
-	return nil, ErrClientNotKnown
-}
-
 func (r *Redirector) getServerConnection(key string) (mux.Conn, error) {
-	r.cm.Lock()
-	defer r.cm.Unlock()
+	r.m.Lock()
+	defer r.m.Unlock()
 
 	if conn, ok := r.servers[key]; ok {
 		return conn, nil
@@ -160,11 +101,13 @@ func (r *Redirector) getServerConnection(key string) (mux.Conn, error) {
 		return nil, err
 	}
 
-	peer, err := net.ResolveUDPAddr("udp", node.Addr.String()+":"+getRandomPort(2))
+	peer, err := net.ResolveUDPAddr("udp", node.Addr.String()+":"+getRandomPort(3))
 	if err != nil {
 		log.Println("could resolve server addr", err)
 		return nil, err
 	}
+
+	fmt.Println(fmt.Sprintf("Redirecting to %s", peer.String()))
 
 	conn, err := r.newConnFunc(peer)
 	if err != nil {
@@ -176,14 +119,19 @@ func (r *Redirector) getServerConnection(key string) (mux.Conn, error) {
 	return conn, nil
 }
 
-func (r *Redirector) redirectToServer(srvConn mux.Conn, clientConn mux.Conn, clientMsg *pool.Message) (*pool.Message, error) {
+func (r *Redirector) redirectToServer(srvConn mux.Conn, clientConn mux.Conn, clientMsg *pool.Message, qs []string) (*pool.Message, error) {
 	srvMsg := srvConn.AcquireMessage(context.Background())
 	if err := clientMsg.Clone(srvMsg); err != nil {
 		return nil, err
 	}
 
+	srvMsg.Options().Remove(message.URIQuery)
+	for _, q := range qs {
+		srvMsg.Options().Add(message.Option{ID: message.URIQuery, Value: []byte(q)})
+	}
+
 	// adding identifier of client request
-	srvMsg.AddQuery(fmt.Sprintf("clientAddr=%s", clientConn.RemoteAddr().String()))
+	srvMsg.AddQuery(fmt.Sprintf("originalAddr=%s", clientConn.RemoteAddr().String()))
 
 	srvResp, err := srvConn.Do(srvMsg)
 	if err != nil {
@@ -216,7 +164,6 @@ func getRandomPort(num int) string {
 func NewRedirector(ring memberring.Ring) *Redirector {
 	return &Redirector{
 		ring:    ring,
-		clients: make(map[string]mux.Conn),
 		servers: make(map[string]mux.Conn),
 	}
 }
