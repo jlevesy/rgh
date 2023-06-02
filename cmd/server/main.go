@@ -5,8 +5,10 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -48,15 +50,18 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	connections := &Connections{clients: make(map[string]mux.Conn)}
 	r := mux.NewRouter()
 	r.Use(logRequests)
 	r.Handle("/call", handleCall(memberName))
+	r.Handle("/bidirectional", handleBidirectionalCall(connections, memberName))
 
 	coapListener, err := net.NewListenUDP("udp", fmt.Sprintf(":%d", coapPort))
 	if err != nil {
 		log.Fatal("Can't listen coap", err)
 	}
 	coapSrv := udp.NewServer(options.WithContext(ctx), options.WithMux(r))
+	connections.newConnFunc = coapSrv.NewConn
 
 	var wg errgroup.Group
 
@@ -86,10 +91,92 @@ func main() {
 
 func handleCall(n string) mux.Handler {
 	return mux.HandlerFunc(func(w mux.ResponseWriter, req *mux.Message) {
-		if err := w.SetResponse(codes.GET, message.TextPlain, bytes.NewReader([]byte(n))); err != nil {
+		if err := w.SetResponse(codes.Content, message.TextPlain, bytes.NewReader([]byte(n))); err != nil {
 			log.Printf("cannot set response: %v", err)
 		}
 	})
+}
+
+func handleBidirectionalCall(connections *Connections, n string) mux.Handler {
+	return mux.HandlerFunc(func(w mux.ResponseWriter, req *mux.Message) {
+		rawQueries, err := req.Queries()
+		if err != nil {
+			log.Println("could retrieve queries", rawQueries)
+			w.SetResponse(
+				codes.InternalServerError,
+				message.TextPlain,
+				bytes.NewReader([]byte(err.Error())),
+			)
+			return
+		}
+
+		var originalAddr string
+		qs := parseQueries(rawQueries)
+		if addr, ok := qs["originalAddr"]; ok {
+			originalAddr = addr
+			err := connections.registerClientConnection(addr)
+			if err != nil {
+				w.SetResponse(
+					codes.InternalServerError,
+					message.TextPlain,
+					bytes.NewReader([]byte(err.Error())),
+				)
+			}
+		}
+
+		if err := w.SetResponse(codes.GET, message.TextPlain, bytes.NewReader([]byte(n))); err != nil {
+			log.Printf("cannot set response: %v", err)
+		}
+
+		go func() {
+			if originalAddr == "" {
+				log.Printf("client with %s addr is not yet registered", originalAddr)
+				return
+			}
+
+			conn := connections.getClientConnection(originalAddr)
+			if conn == nil {
+				log.Printf("client with %s addr is not yet registered", originalAddr)
+				return
+			}
+
+			resp, err := conn.Post(
+				context.Background(),
+				"/bidirectional",
+				message.TextPlain,
+				bytes.NewReader([]byte(fmt.Sprintf("HELLO %s client", conn.RemoteAddr().String()))),
+			)
+
+			if err != nil {
+				log.Printf("cannot get bidirecitonal: %v", err)
+				return
+			}
+
+			payload, err := io.ReadAll(resp.Body())
+			if err != nil {
+				log.Printf("cannot read body: %v", err)
+				return
+			}
+
+			fmt.Println("GOT A BIDIRECTIONAL RESPONSE -----> ", resp.Code(), string(payload))
+		}()
+	})
+}
+
+func parseQueries(queries []string) map[string]string {
+	parsed := make(map[string]string, len(queries))
+
+	for _, v := range queries {
+		sp := strings.SplitN(v, "=", 2)
+		if len(sp) != 2 {
+			parsed[v] = ""
+			continue
+		}
+
+		parsed[sp[0]] = sp[1]
+	}
+
+	return parsed
 }
 
 func logRequests(next mux.Handler) mux.Handler {

@@ -10,10 +10,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jlevesy/rgh/pkg/coap"
 	"github.com/jlevesy/rgh/pkg/memberring"
 	"github.com/plgd-dev/go-coap/v3/mux"
-	"github.com/plgd-dev/go-coap/v3/net"
+	coapNet "github.com/plgd-dev/go-coap/v3/net"
 	"github.com/plgd-dev/go-coap/v3/options"
 	"github.com/plgd-dev/go-coap/v3/udp"
 	"golang.org/x/sync/errgroup"
@@ -47,14 +46,17 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	coapListener, err := net.NewListenUDP("udp", fmt.Sprintf(":%d", coapPort))
+	coapListener, err := coapNet.NewListenUDP("udp", fmt.Sprintf(":%d", coapPort))
 	if err != nil {
 		log.Fatal("Can't listen coap", err)
 	}
+
+	redirector := NewRedirector(ring)
 	coapSrv := udp.NewServer(
 		options.WithContext(ctx),
-		options.WithMux(redirect(ring)),
+		options.WithMux(redirect(redirector)),
 	)
+	redirector.SetNewConnFunc(coapSrv.NewConn)
 
 	var wg errgroup.Group
 
@@ -83,35 +85,9 @@ func main() {
 	log.Println("Exited")
 }
 
-func redirect(ring memberring.Ring) mux.Handler {
+func redirect(redirector *Redirector) mux.Handler {
 	return mux.HandlerFunc(func(w mux.ResponseWriter, r *mux.Message) {
-		rawQueries, err := r.Message.Queries()
-		if err != nil {
-			log.Println("could retrieve queries", rawQueries)
-			coap.Abort(w)
-			return
-		}
-
-		qs := parseQueries(rawQueries)
-
-		key, ok := qs["key"]
-		if !ok {
-			log.Println("could retrieve key")
-			coap.Abort(w)
-			return
-		}
-
-		srv, err := ring.GetNode([]byte(key))
-		if err != nil {
-			log.Println("could not retrieve the node", err)
-			coap.Abort(w)
-			return
-		}
-
-		fmt.Println("Routing query to node", srv.Name)
-
-		// LOOOOL
-		coap.Forward(srv.Addr.String()+":10000", w, r)
+		redirector.Redirect(w, r)
 	})
 }
 
