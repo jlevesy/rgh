@@ -5,11 +5,13 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/jlevesy/rgh/pkg/coap"
 	"github.com/jlevesy/rgh/pkg/memberring"
 	"github.com/plgd-dev/go-coap/v3/message"
 	"github.com/plgd-dev/go-coap/v3/message/codes"
@@ -50,12 +52,15 @@ func main() {
 
 	r := mux.NewRouter()
 	r.Use(logRequests)
-	r.Handle("/call", handleCall(memberName))
+	r.Handle("/call", coap.ForwardUpstreamKey(handleCall(memberName)))
+	r.Handle("/bidirectional", coap.ForwardUpstreamKey(handleBidirectionalCall(memberName)))
 
 	coapListener, err := net.NewListenUDP("udp", fmt.Sprintf(":%d", coapPort))
 	if err != nil {
 		log.Fatal("Can't listen coap", err)
 	}
+	defer coapListener.Close()
+
 	coapSrv := udp.NewServer(options.WithContext(ctx), options.WithMux(r))
 
 	var wg errgroup.Group
@@ -86,6 +91,33 @@ func main() {
 
 func handleCall(n string) mux.Handler {
 	return mux.HandlerFunc(func(w mux.ResponseWriter, req *mux.Message) {
+		if err := w.SetResponse(codes.GET, message.TextPlain, bytes.NewReader([]byte(n))); err != nil {
+			log.Printf("cannot set response: %v", err)
+		}
+	})
+}
+
+func handleBidirectionalCall(n string) mux.Handler {
+	return mux.HandlerFunc(func(w mux.ResponseWriter, req *mux.Message) {
+		resp, err := w.Conn().Post(
+			req.Context(),
+			"/bidirectional",
+			message.TextPlain,
+			bytes.NewReader([]byte("HELLO THERE")),
+		)
+		if err != nil {
+			log.Printf("cannot get bidirecitonal: %v", err)
+			return
+		}
+
+		payload, err := io.ReadAll(resp.Body())
+		if err != nil {
+			log.Printf("cannot read body: %v", err)
+			return
+		}
+
+		fmt.Println("Got a bidirectional response", resp.Code(), string(payload))
+
 		if err := w.SetResponse(codes.GET, message.TextPlain, bytes.NewReader([]byte(n))); err != nil {
 			log.Printf("cannot set response: %v", err)
 		}
