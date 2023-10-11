@@ -5,6 +5,7 @@ go 1.19
 require (
 	github.com/hashicorp/memberlist v0.5.0
 	github.com/plgd-dev/go-coap/v3 v3.1.1
+	golang.org/x/exp v0.0.0-20230108222341-4b8118a2686a
 	golang.org/x/sync v0.1.0
 )
 
@@ -25,8 +26,7 @@ require (
 	github.com/pion/udp v0.1.2-0.20221201030934-a2465bb5d508 // indirect
 	github.com/sean-/seed v0.0.0-20170313163322-e2103e2c3529 // indirect
 	go.uber.org/atomic v1.10.0 // indirect
-	golang.org/x/crypto v0.5.0 // indirect
-	golang.org/x/exp v0.0.0-20230108222341-4b8118a2686a // indirect
-	golang.org/x/net v0.5.0 // indirect
-	golang.org/x/sys v0.4.0 // indirect
+	golang.org/x/crypto v0.14.0 // indirect
+	golang.org/x/net v0.17.0 // indirect
+	golang.org/x/sys v0.13.0 // indirect
 )
